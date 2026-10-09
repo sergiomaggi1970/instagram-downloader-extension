@@ -13,6 +13,7 @@ export const MSG = {
   PRIVATE: 'Vídeo privado ou restrito: faça login no TikTok neste navegador',
   RATE: 'Muitas requisições, aguarde alguns minutos',
   BLOCKED: 'O TikTok pediu verificação: abra tiktok.com neste navegador, conclua e tente de novo',
+  FORBIDDEN: 'O TikTok bloqueou o acesso (HTTP 403) a este navegador ou rede. Confira se tiktok.com abre normalmente aqui; VPN, proxy ou muitas tentativas podem causar isso',
   NO_MEDIA: 'Post sem vídeo ou foto',
   INVALID: 'Link não reconhecido',
 };
@@ -186,6 +187,7 @@ export async function resolve(parsed, ctx = {}) {
   }
   if (res.status === 429) throw new PlatformError('rate', MSG.RATE);
   if (res.status === 404) throw new PlatformError('notfound', MSG.GONE);
+  if (res.status === 403) throw new PlatformError('blocked', MSG.FORBIDDEN);
 
   const r = extractItem(await res.text());
   if (r.state === 'blocked') throw new PlatformError('blocked', MSG.BLOCKED);

@@ -64,6 +64,7 @@ const bi = (codec, br, url) => ({ CodecType: codec, Bitrate: br, PlayAddr: { Url
 const ttVideo = (id, user) => ({ statusCode: 0, itemInfo: { itemStruct: { id, author: { uniqueId: user }, video: { bitrateInfo: [bi('h265_hvc1', 3e6, `https://v16.tiktok.com/${id}-h265.mp4`), bi('h264', 2e6, `https://v16.tiktok.com/${id}-h264.mp4`)] } } } });
 const ttPhotos = (id, user) => ({ statusCode: 0, itemInfo: { itemStruct: { id, author: { uniqueId: user }, imagePost: { images: [1, 2].map((n) => ({ imageURL: { urlList: [`https://p16.tiktokcdn.com/${id}-${n}.jpeg?x=1`] } })) } } } });
 let ttBlocked = false;
+let ttForbidden = false;
 const tiktokPages = {
   '/@ana/video/7001': [200, ttPage(ttVideo('7001', 'ana'))],
   '/@bia/photo/7002': [200, ttPage(ttPhotos('7002', 'bia'))],
@@ -77,6 +78,7 @@ const tiktokPages = {
 const ttRules = [];
 function tiktokFetch(url) {
   const u = new URL(url);
+  if (ttForbidden) return { status: 403, text: async () => '<HTML><H1>Access Denied</H1></HTML>' };
   if (ttBlocked) return { status: 200, text: async () => '<html>Verify to continue</html>' };
   const key = u.hostname === 'vm.tiktok.com' ? '/t' + u.pathname : u.pathname;
   const [status, text] = tiktokPages[key] || [404, ''];
@@ -300,6 +302,16 @@ const ttBlock = await run('https://www.tiktok.com/@ok/video/7006');
 ttBlocked = false;
 await scenario('página de verificação → mensagem pedindo para abrir tiktok.com', () =>
   assert.match(ttBlock.logs.join('\n'), /\[TT\] erro: O TikTok pediu verificação: abra tiktok\.com neste navegador/));
+ttForbidden = true;
+const ttForbid = await run(['https://www.tiktok.com/@ok/video/7006', 'https://www.tiktok.com/@ana/video/7001'].join('\n'));
+ttForbidden = false;
+await scenario('HTTP 403 do TikTok → mensagem de bloqueio de acesso (não "verificação") e fila do TikTok interrompida', () => {
+  const t = ttForbid.logs.join('\n');
+  assert.match(t, /\[TT\] erro: O TikTok bloqueou o acesso \(HTTP 403\) a este navegador ou rede/);
+  assert.doesNotMatch(t, /pediu verificação/);
+  assert.match(t, /\[TT\] aviso: Fila interrompida; 1 link\(s\)/);
+  assert.deepEqual(ttForbid.files, []);
+});
 const origDownload = chrome.downloads.download;
 chrome.downloads.download = async () => undefined; // o Chrome recusa
 const ttRefused = await run('https://www.tiktok.com/@ok/video/7006');
