@@ -309,6 +309,12 @@ test('página: extrai o item; apagado, privado e verificação (sem JSON)', () =
   assert.equal(tt.extractItem('<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">{quebrado</script>').state, 'blocked');
   assert.equal(tt.extractItem(ttPage(undefined)).state, 'blocked');
 });
+test('extractItemFromJson (texto do <script>) e página sem dados', () => {
+  const json = JSON.stringify({ __DEFAULT_SCOPE__: { 'webapp.video-detail': { statusCode: 0, itemInfo: { itemStruct: ttItem() } } } });
+  assert.equal(tt.extractItemFromJson(json).state, 'ok');
+  assert.equal(tt.extractItemFromJson('{').state, 'blocked');
+  assert.equal(tt.extractItemFromJson('{}').state, 'blocked');
+});
 test('vídeo: prefere h264 de maior bitrate; sem bitrateInfo usa playAddr/downloadAddr', () => {
   assert.equal(tt.pickVideoUrl(ttItem()), 'https://v/h264-best.mp4');
   const onlyH265 = ttItem({ video: { bitrateInfo: [bi('h265_hvc1', 1, 'https://v/a.mp4'), bi('h265_hvc1', 9, 'https://v/b.mp4')] } });

@@ -1,5 +1,5 @@
 /* Plataforma: TikTok (vídeos e posts de fotos). */
-import { PlatformError, sanitizeFilename, extFromUrl } from './common.js';
+import { PlatformError, sanitizeFilename, extFromUrl, waitTabComplete } from './common.js';
 
 export const id = 'tiktok';
 export const tag = 'TT';
@@ -19,6 +19,11 @@ export const MSG = {
 };
 
 /** Mostrado no log (aviso) quando o download de um arquivo é recusado. */
+export const downloadRetries = 1; // o CDN às vezes recusa a primeira tentativa
+
+/** Ajustáveis (os testes encurtam os tempos). */
+export const settings = { retryDelayMs: 1500, tabPollMs: 750 };
+
 export const downloadHint =
   'Se o download foi recusado (403), abra tiktok.com uma vez neste navegador e tente de novo';
 
@@ -80,10 +85,14 @@ export function extractItem(html) {
   const m = String(html || '').match(
     /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/
   );
-  if (!m) return { state: 'blocked' };
+  return m ? extractItemFromJson(m[1]) : { state: 'blocked' };
+}
+
+/** Mesmo que extractItem, a partir do texto do <script> já isolado. */
+export function extractItemFromJson(jsonText) {
   let data;
   try {
-    data = JSON.parse(m[1]);
+    data = JSON.parse(jsonText);
   } catch {
     return { state: 'blocked' };
   }
@@ -175,22 +184,75 @@ export function isFatal(err) {
 
 export async function cleanup() {}
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Roda dentro da aba: devolve o JSON que a própria página embute. */
+function readRehydrationJson() {
+  const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+  return el ? el.textContent : null;
+}
+
+/**
+ * Plano B quando a requisição direta é barrada: abre o vídeo numa aba em segundo plano
+ * (navegação real, que passa pela verificação do TikTok), lê o JSON da página e fecha a aba.
+ */
+async function loadViaTab(url) {
+  const tab = await chrome.tabs.create({ url, active: false });
+  try {
+    await waitTabComplete(tab.id, 30000);
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readRehydrationJson });
+        const text = r && r[0] && r[0].result;
+        if (text) return text;
+      } catch {
+        /* página ainda carregando ou bloqueada */
+      }
+      await sleep(settings.tabPollMs);
+    }
+    return null;
+  } finally {
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch {
+      /* já fechada */
+    }
+  }
+}
+
+/** Busca os dados da página: 2 tentativas diretas e, se continuar barrado, uma aba real. */
+async function fetchItem(url) {
+  let status = 0; // 0 = erro de rede
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await sleep(settings.retryDelayMs);
+    let res;
+    try {
+      res = await fetch(url, { credentials: 'include' });
+    } catch {
+      status = 0;
+      continue;
+    }
+    status = res.status;
+    if (status === 429) throw new PlatformError('rate', MSG.RATE);
+    if (status === 404) throw new PlatformError('notfound', MSG.GONE);
+    const r = extractItem(await res.text());
+    if (r.state !== 'blocked') return r;
+  }
+
+  const json = await loadViaTab(url);
+  if (json) {
+    const r = extractItemFromJson(json);
+    if (r.state !== 'blocked') return r;
+  }
+  if (status === 0) throw new PlatformError('http', 'Erro de rede ao consultar o TikTok');
+  throw new PlatformError('blocked', status === 403 ? MSG.FORBIDDEN : MSG.BLOCKED);
+}
+
 /** Resolve o link em arquivos a baixar: [{url, filename}]. */
 export async function resolve(parsed, ctx = {}) {
   await ensureReferer();
 
-  let res;
-  try {
-    res = await fetch(parsed.normalized, { credentials: 'include' });
-  } catch (e) {
-    throw new PlatformError('http', `Erro de rede: ${e.message || e}`);
-  }
-  if (res.status === 429) throw new PlatformError('rate', MSG.RATE);
-  if (res.status === 404) throw new PlatformError('notfound', MSG.GONE);
-  if (res.status === 403) throw new PlatformError('blocked', MSG.FORBIDDEN);
-
-  const r = extractItem(await res.text());
-  if (r.state === 'blocked') throw new PlatformError('blocked', MSG.BLOCKED);
+  const r = await fetchItem(parsed.normalized);
   if (r.state === 'private') throw new PlatformError('auth', MSG.PRIVATE);
   if (r.state === 'gone') throw new PlatformError('notfound', MSG.GONE);
 

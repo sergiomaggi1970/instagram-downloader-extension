@@ -65,6 +65,8 @@ const ttVideo = (id, user) => ({ statusCode: 0, itemInfo: { itemStruct: { id, au
 const ttPhotos = (id, user) => ({ statusCode: 0, itemInfo: { itemStruct: { id, author: { uniqueId: user }, imagePost: { images: [1, 2].map((n) => ({ imageURL: { urlList: [`https://p16.tiktokcdn.com/${id}-${n}.jpeg?x=1`] } })) } } } });
 let ttBlocked = false;
 let ttForbidden = false;
+let ttFlaky = 0; // quantas respostas 403 seguidas antes de voltar ao normal
+let ttTabJson = null; // o que a aba em segundo plano "leria" da página
 const tiktokPages = {
   '/@ana/video/7001': [200, ttPage(ttVideo('7001', 'ana'))],
   '/@bia/photo/7002': [200, ttPage(ttPhotos('7002', 'bia'))],
@@ -78,6 +80,7 @@ const tiktokPages = {
 const ttRules = [];
 function tiktokFetch(url) {
   const u = new URL(url);
+  if (ttFlaky > 0) { ttFlaky--; return { status: 403, text: async () => 'Access Denied' }; }
   if (ttForbidden) return { status: 403, text: async () => '<HTML><H1>Access Denied</H1></HTML>' };
   if (ttBlocked) return { status: 200, text: async () => '<html>Verify to continue</html>' };
   const key = u.hostname === 'vm.tiktok.com' ? '/t' + u.pathname : u.pathname;
@@ -251,7 +254,12 @@ await scenario('sem login: erro claro e fila do Instagram interrompida (como ant
 // restaura o mock do Instagram (os cenários acima o deixaram sem login)
 igMode = 'ok';
 chrome.scripting.executeScript = async (o) =>
-  o.args ? [{ result: { status: 200, text: JSON.stringify({ items: [igReel] }), url: 'https://www.instagram.com/api' } }] : [{ result: false }];
+  o.func && o.func.name === 'readRehydrationJson'
+    ? [{ result: ttTabJson }]
+    : o.args ? [{ result: { status: 200, text: JSON.stringify({ items: [igReel] }), url: 'https://www.instagram.com/api' } }] : [{ result: false }];
+const ttSettings = (await import('../platforms/tiktok.js')).settings;
+ttSettings.retryDelayMs = 5;
+ttSettings.tabPollMs = 5;
 
 console.log('TikTok');
 const tt = await run([
@@ -312,6 +320,35 @@ await scenario('HTTP 403 do TikTok → mensagem de bloqueio de acesso (não "ver
   assert.match(t, /\[TT\] aviso: Fila interrompida; 1 link\(s\)/);
   assert.deepEqual(ttForbid.files, []);
 });
+
+ttFlaky = 1; // 1ª tentativa direta barrada, a 2ª passa
+const ttRetry = await run('https://www.tiktok.com/@ok/video/7006');
+await scenario('intermitente: 403 na 1ª tentativa, repete e baixa (sem abrir aba)', () => {
+  assert.deepEqual(ttRetry.files, ['TikTok/ok - 7006.mp4']);
+  assert.equal(closedTabs.length, 0);
+});
+ttFlaky = 0;
+ttForbidden = true;
+ttTabJson = JSON.stringify({ __DEFAULT_SCOPE__: { 'webapp.video-detail': ttVideo('7006', 'ok') } });
+const ttViaTab = await run('https://www.tiktok.com/@ok/video/7006');
+ttForbidden = false;
+ttTabJson = null;
+await scenario('barrado nas duas tentativas diretas: lê a página numa aba real e fecha a aba', () => {
+  assert.deepEqual(ttViaTab.files, ['TikTok/ok - 7006.mp4']);
+  assert.equal(closedTabs.length, 1);
+  assert.match(ttViaTab.logs.join('\n'), /1 baixado\(s\) · 0 falha\(s\)/);
+});
+{
+  const real = chrome.downloads.download;
+  let calls = 0;
+  chrome.downloads.download = async (o) => (++calls === 1 ? undefined : real(o)); // CDN recusa só a 1ª vez
+  const ttDl = await run('https://www.tiktok.com/@ok/video/7006');
+  chrome.downloads.download = real;
+  await scenario('download recusado na 1ª vez: repete uma vez e conclui', () => {
+    assert.deepEqual(ttDl.files, ['TikTok/ok - 7006.mp4']);
+    assert.match(ttDl.logs.join('\n'), /1 baixado\(s\) · 0 falha\(s\)/);
+  });
+}
 const origDownload = chrome.downloads.download;
 chrome.downloads.download = async () => undefined; // o Chrome recusa
 const ttRefused = await run('https://www.tiktok.com/@ok/video/7006');

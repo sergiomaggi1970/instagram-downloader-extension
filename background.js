@@ -124,7 +124,15 @@ async function processLine(route) {
   let failed = 0;
   for (const f of files) {
     try {
-      await downloadFile(f.url, f.filename);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await downloadFile(f.url, f.filename);
+          break;
+        } catch (e) {
+          if (attempt >= (platform.downloadRetries || 0)) throw e;
+          await sleep(1500);
+        }
+      }
       log('ok', `✔ ${f.filename}`);
     } catch (e) {
       failed++;
