@@ -1,0 +1,151 @@
+:root {
+  --bg: #0f0f0f;
+  --surface: #1a1a1a;
+  --border: #2e2e2e;
+  --accent: #00e5ff;
+  --stop: #ff4081;
+  --text: #f0f0f0;
+  --muted: #707070;
+  --ok: #00e676;
+  --err: #ff5252;
+  --warn: #ffab40;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+
+body {
+  width: 480px;
+  padding: 16px;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.hint {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+textarea {
+  width: 100%;
+  height: 130px;
+  resize: vertical;
+  padding: 10px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  font-size: 12px;
+  outline: none;
+}
+
+textarea:focus {
+  border-color: var(--accent);
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+button {
+  padding: 9px 16px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+button.primary {
+  flex: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #001418;
+}
+
+button.danger {
+  background: var(--stop);
+  border-color: var(--stop);
+  color: #1a0009;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.log {
+  height: 200px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.log .line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log .time {
+  color: var(--muted);
+  margin-right: 6px;
+}
+
+.log .info {
+  color: var(--text);
+}
+.log .ok {
+  color: var(--ok);
+}
+.log .erro {
+  color: var(--err);
+}
+.log .aviso {
+  color: var(--warn);
+}
+
+.summary {
+  margin-top: 8px;
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.summary b.ok {
+  color: var(--ok);
+}
+.summary b.fail {
+  color: var(--err);
+}
