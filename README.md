@@ -23,8 +23,9 @@ Estar **logado no Instagram** neste navegador. A extensão usa os cookies da sua
 2. Cole os links, um por linha (linhas começando com `#` são ignoradas). Aceita:
    - `instagram.com/reel/…`, `/reels/…`, `/p/…`, `/tv/…`
    - `instagram.com/stories/{usuario}/{id}/`
-3. Clique em **Baixar vídeos**. O progresso aparece no log.
-4. **Parar** interrompe a fila depois do item atual. **Limpar** apaga a lista e o log.
+3. Se o reel, post ou story já está aberto no navegador, use **＋ Aba atual** (só a aba ativa) ou **＋ Todas as abas** (todas as abas do Instagram abertas) para inserir os links sem copiar.
+4. Clique em **Baixar vídeos**. O progresso aparece no log.
+5. **Parar** interrompe a fila depois do item atual. **Limpar** apaga a lista e o log.
 
 O processamento roda em segundo plano: pode fechar o popup e reabrir depois, que o log continua lá. O texto da caixa também é guardado.
 

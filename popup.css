@@ -149,3 +149,19 @@ button:disabled {
 .summary b.fail {
   color: var(--err);
 }
+
+.tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+button.small {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.tabs-row .hint {
+  margin: 0;
+}

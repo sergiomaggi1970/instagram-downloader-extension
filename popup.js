@@ -57,6 +57,32 @@ $start.addEventListener('click', async () => {
   await send({ type: 'start', text: $links.value });
 });
 
+const $tabsMsg = document.getElementById('tabsMsg');
+
+async function addTabs(onlyActive) {
+  const res = await send({ type: 'listTabs' });
+  let urls = (res && res.urls) || [];
+  if (onlyActive) {
+    const [cur] = await chrome.tabs.query({ active: true, currentWindow: true });
+    urls = urls.filter((u) => cur && u.active && u.windowId === cur.windowId);
+  }
+  const existing = new Set($links.value.split(/\r?\n/).map((l) => l.trim()));
+  const fresh = urls.map((u) => u.url).filter((u) => !existing.has(u));
+  if (fresh.length) {
+    const base = $links.value.replace(/\s+$/, '');
+    $links.value = (base ? base + '\n' : '') + fresh.join('\n') + '\n';
+    await chrome.storage.local.set({ urlsText: $links.value });
+  }
+  $tabsMsg.textContent = fresh.length
+    ? `${fresh.length} link(s) adicionado(s)`
+    : urls.length
+      ? 'Já está na lista'
+      : 'Nenhum reel/post/story aberto';
+}
+
+document.getElementById('addCurrent').addEventListener('click', () => addTabs(true));
+document.getElementById('addAll').addEventListener('click', () => addTabs(false));
+
 $stop.addEventListener('click', () => send({ type: 'stop' }));
 
 $clear.addEventListener('click', async () => {

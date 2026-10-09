@@ -521,6 +521,19 @@ async function handleMessage(msg) {
       return { ok: true, queued: enqueue(parseLinks(msg.text)) };
     case 'downloadUrl':
       return { ok: true, queued: enqueue(parseLinks(msg.url)) };
+    case 'listTabs': {
+      const tabs = await chrome.tabs.query({ url: 'https://www.instagram.com/*' });
+      const seen = new Set();
+      const urls = [];
+      for (const tab of tabs.sort((a, b) => a.index - b.index)) {
+        const p = parseInstagramUrl(tab.url);
+        if (p && !seen.has(p.normalized)) {
+          seen.add(p.normalized);
+          urls.push({ url: p.normalized, active: tab.active, windowId: tab.windowId });
+        }
+      }
+      return { ok: true, urls };
+    }
     case 'stop':
       if (running) {
         stopRequested = true;
