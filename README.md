@@ -83,7 +83,7 @@ Em caso de falta de login no Instagram, de 429 ou de verificação do TikTok, os
 1. O link é normalizado (links curtos são seguidos pelo próprio navegador). A página do vídeo é lida e o JSON que ela embute (`__UNIVERSAL_DATA_FOR_REHYDRATION__`) traz os dados, sem login.
 2. A proteção anti-robô do TikTok às vezes barra a consulta direta (403). A extensão tenta duas vezes e, se continuar barrada, abre o vídeo numa aba em segundo plano, lê os dados da própria página e fecha a aba. Download recusado pelo servidor de vídeos também é repetido uma vez.
 3. Vídeo: escolhe a versão h264 de maior bitrate (toca em qualquer lugar; sem marca d'água). Post de fotos: baixa todas as imagens.
-5. O CDN do TikTok recusa (403) pedidos sem o cookie da página e sem `Referer: tiktok.com`. Os cookies vêm da própria consulta à página; o `Referer` é colocado por uma regra `declarativeNetRequest` que vale **só para pedidos da própria extensão** (não altera a sua navegação).
+4. O CDN do TikTok recusa (403) pedidos sem o cookie da página e sem `Referer: tiktok.com`. Os cookies vêm da própria consulta à página; o `Referer` é colocado por uma regra `declarativeNetRequest` que vale **só para pedidos da própria extensão** (não altera a sua navegação).
 
 ## Estrutura
 
