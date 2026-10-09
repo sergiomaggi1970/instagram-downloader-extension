@@ -50,12 +50,38 @@ globalThis.fetch = async (url) => {
     const item = url.includes('/' + igMediaId.carousel + '/') ? igCarousel : igReel;
     return { status: igMode === '401' ? 401 : 200, url: 'https://www.instagram.com/api', text: async () => (igMode === '401' ? '<html>login</html>' : JSON.stringify({ items: [item] })) };
   }
+  if (url.includes('tiktok.com')) return tiktokFetch(url);
   const m = url.match(/tweet-result\?id=(\d+)&token=([a-z0-9]+)&lang=pt$/);
   assert.ok(m, 'URL inesperada: ' + url);
   const [status, text] = syndication[m[1]] || [404, ''];
   return { status, text: async () => text };
 };
 let igMode = 'ok';
+
+// ---- TikTok simulado ----
+const ttPage = (detail) => `<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({ __DEFAULT_SCOPE__: { 'webapp.video-detail': detail } })}</script></html>`;
+const bi = (codec, br, url) => ({ CodecType: codec, Bitrate: br, PlayAddr: { UrlList: [url] } });
+const ttVideo = (id, user) => ({ statusCode: 0, itemInfo: { itemStruct: { id, author: { uniqueId: user }, video: { bitrateInfo: [bi('h265_hvc1', 3e6, `https://v16.tiktok.com/${id}-h265.mp4`), bi('h264', 2e6, `https://v16.tiktok.com/${id}-h264.mp4`)] } } } });
+const ttPhotos = (id, user) => ({ statusCode: 0, itemInfo: { itemStruct: { id, author: { uniqueId: user }, imagePost: { images: [1, 2].map((n) => ({ imageURL: { urlList: [`https://p16.tiktokcdn.com/${id}-${n}.jpeg?x=1`] } })) } } } });
+let ttBlocked = false;
+const tiktokPages = {
+  '/@ana/video/7001': [200, ttPage(ttVideo('7001', 'ana'))],
+  '/@bia/photo/7002': [200, ttPage(ttPhotos('7002', 'bia'))],
+  '/@gone/video/7003': [200, ttPage({ statusCode: 10204 })],
+  '/@priv/video/7004': [200, ttPage({ statusCode: 10222 })],
+  '/@_/video/7005': [200, ttPage(ttVideo('7005', 'real_user'))], // link antigo m.tiktok.com/v/7005.html
+  '/@ok/video/7006': [200, ttPage(ttVideo('7006', 'ok'))],
+  '/@rate/video/7007': [429, ''],
+  '/t/ZTshort1/': [200, ttPage(ttVideo('7008', 'curto'))],
+};
+const ttRules = [];
+function tiktokFetch(url) {
+  const u = new URL(url);
+  if (ttBlocked) return { status: 200, text: async () => '<html>Verify to continue</html>' };
+  const key = u.hostname === 'vm.tiktok.com' ? '/t' + u.pathname : u.pathname;
+  const [status, text] = tiktokPages[key] || [404, ''];
+  return { status, text: async () => text };
+}
 import { shortcodeToMediaId } from '../platforms/instagram.js';
 const igMediaId = { carousel: shortcodeToMediaId('CwAbC123xyZ') };
 // reels usam outro shortcode, para o mock devolver o item certo
@@ -87,6 +113,7 @@ globalThis.chrome = {
         ? [{ result: { status: 200, text: JSON.stringify({ items: [igReel] }), url: 'https://www.instagram.com/api' } }]
         : [{ result: false }],
   },
+  declarativeNetRequest: { updateSessionRules: async (r) => ttRules.push(r) },
   downloads: { download: async (o) => { downloads.push(o); return downloads.length; }, search: async () => [{ state: 'complete' }], onChanged: noop },
 };
 
@@ -216,6 +243,70 @@ await scenario('sem login: erro claro e fila do Instagram interrompida (como ant
   const t = igNoLogin.logs.join('\n');
   assert.match(t, /\[IG\] erro: Faça login no Instagram neste navegador/);
   assert.match(t, /\[IG\] aviso: Fila interrompida; 2 link\(s\) não processado\(s\)/);
+  assert.match(t, /0 baixado\(s\) · 1 falha\(s\)/);
+});
+
+// restaura o mock do Instagram (os cenários acima o deixaram sem login)
+igMode = 'ok';
+chrome.scripting.executeScript = async (o) =>
+  o.args ? [{ result: { status: 200, text: JSON.stringify({ items: [igReel] }), url: 'https://www.instagram.com/api' } }] : [{ result: false }];
+
+console.log('TikTok');
+const tt = await run([
+  'https://www.tiktok.com/@ana/video/7001?is_from_webapp=1&sender_device=pc',  // vídeo
+  'https://www.tiktok.com/@bia/photo/7002',                                    // 2 fotos
+  'https://www.tiktok.com/@gone/video/7003',                                   // apagado
+  'https://www.tiktok.com/@priv/video/7004',                                   // privado
+  'https://m.tiktok.com/v/7005.html',                                          // link antigo
+  'https://vm.tiktok.com/ZTshort1/',                                           // link curto
+  'https://x.com/ana/status/1001',                                             // misturado com X
+  'https://www.instagram.com/reel/DaReel12345/',                               // e Instagram
+].join('\n'));
+await scenario('nomes na pasta TikTok/ (vídeo h264, fotos _n, link antigo e curto)', () => {
+  assert.deepEqual(tt.files, [
+    'TikTok/ana - 7001.mp4',
+    'TikTok/bia - 7002_1.jpeg',
+    'TikTok/bia - 7002_2.jpeg',
+    'TikTok/real_user - 7005.mp4',
+    'TikTok/curto - 7008.mp4',
+    'X/ana - 1001.mp4',
+    'Instagram/fulano - DaReel12345.mp4',
+  ]);
+  const urls = downloads.map((d) => d.url);
+  assert.ok(urls.includes('https://v16.tiktok.com/7001-h264.mp4') && !urls.some((u) => u.includes('h265')));
+});
+await scenario('erros claros e prefixo [TT]', () => {
+  const t = tt.logs.join('\n');
+  assert.match(t, /\[TT\] info: Processando https:\/\/www\.tiktok\.com\/@ana\/video\/7001\n/);
+  assert.match(t, /\[TT\] erro: Vídeo apagado ou indisponível — https:\/\/www\.tiktok\.com\/@gone\/video\/7003/);
+  assert.match(t, /\[TT\] erro: Vídeo privado ou restrito: faça login no TikTok neste navegador/);
+  assert.match(t, /6 baixado\(s\) · 2 falha\(s\)/);
+});
+await scenario('regra do Referer instalada (só pedidos fora de abas)', () => {
+  const rule = ttRules[0].addRules[0];
+  assert.equal(rule.action.requestHeaders[0].header, 'referer');
+  assert.equal(rule.action.requestHeaders[0].value, 'https://www.tiktok.com/');
+  assert.deepEqual(rule.condition.tabIds, [-1]);
+  assert.ok(rule.condition.requestDomains.includes('tiktok.com') && rule.condition.requestDomains.includes('tiktokcdn.com'));
+});
+const ttRate = await run(['https://www.tiktok.com/@rate/video/7007', 'https://www.tiktok.com/@ok/video/7006', 'https://www.instagram.com/reel/DaReel12345/'].join('\n'));
+await scenario('429 no TikTok descarta os links do TikTok; o Instagram segue', () => {
+  assert.match(ttRate.logs.join('\n'), /\[TT\] erro: Muitas requisições, aguarde alguns minutos/);
+  assert.match(ttRate.logs.join('\n'), /\[TT\] aviso: Fila interrompida; 1 link\(s\)/);
+  assert.deepEqual(ttRate.files, ['Instagram/fulano - DaReel12345.mp4']);
+});
+ttBlocked = true;
+const ttBlock = await run('https://www.tiktok.com/@ok/video/7006');
+ttBlocked = false;
+await scenario('página de verificação → mensagem pedindo para abrir tiktok.com', () =>
+  assert.match(ttBlock.logs.join('\n'), /\[TT\] erro: O TikTok pediu verificação: abra tiktok\.com neste navegador/));
+const origDownload = chrome.downloads.download;
+chrome.downloads.download = async () => undefined; // o Chrome recusa
+const ttRefused = await run('https://www.tiktok.com/@ok/video/7006');
+chrome.downloads.download = origDownload;
+await scenario('download recusado → dica de abrir tiktok.com (só no TikTok)', () => {
+  const t = ttRefused.logs.join('\n');
+  assert.match(t, /\[TT\] aviso: Se o download foi recusado \(403\), abra tiktok\.com/);
   assert.match(t, /0 baixado\(s\) · 1 falha\(s\)/);
 });
 

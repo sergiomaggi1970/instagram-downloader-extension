@@ -183,6 +183,9 @@ button.small {
 .log .plat.IG {
   color: #e1306c;
 }
+.log .plat.TT {
+  color: #25f4ee;
+}
 .log .plat.X {
   color: var(--text);
 }

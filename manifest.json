@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Social Video Downloader",
-  "version": "1.1.0",
-  "description": "Baixa vídeos e fotos do Instagram (reels, posts, stories) e do X em lote, usando a sua sessão do navegador.",
+  "version": "1.2.0",
+  "description": "Baixa vídeos e fotos do Instagram, do X e do TikTok em lote, usando a sua sessão do navegador.",
   "permissions": [
     "downloads",
     "storage",
     "scripting",
-    "tabs"
+    "tabs",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://www.instagram.com/*",
@@ -18,7 +19,15 @@
     "https://mobile.twitter.com/*",
     "https://cdn.syndication.twimg.com/*",
     "https://video.twimg.com/*",
-    "https://pbs.twimg.com/*"
+    "https://pbs.twimg.com/*",
+    "https://www.tiktok.com/*",
+    "https://m.tiktok.com/*",
+    "https://vm.tiktok.com/*",
+    "https://vt.tiktok.com/*",
+    "https://*.tiktok.com/*",
+    "https://*.tiktokcdn.com/*",
+    "https://*.tiktokcdn-us.com/*",
+    "https://*.tiktokv.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -36,7 +45,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.instagram.com/*"
+        "https://www.instagram.com/*",
+        "https://www.tiktok.com/*"
       ],
       "js": [
         "content.js"

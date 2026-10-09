@@ -2,7 +2,11 @@
 
 (() => {
   const BTN_ID = 'igdl-floating-btn';
-  const MEDIA_PATH = /^\/(?:[^/]+\/)?(reel|reels|p)\/[A-Za-z0-9_-]{5,}/;
+  // Instagram: /reel/, /reels/, /p/ · TikTok: /@usuario/video/ID e /@usuario/photo/ID
+  const MEDIA_PATH =
+    location.hostname === 'www.tiktok.com'
+      ? /^\/@[^/]+\/(video|photo)\/\d+/
+      : /^\/(?:[^/]+\/)?(reel|reels|p)\/[A-Za-z0-9_-]{5,}/;
   const LABEL = '⬇ Baixar';
 
   let scheduled = false;

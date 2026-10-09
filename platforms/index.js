@@ -1,8 +1,9 @@
 /* Roteamento: descobre a plataforma de cada link pelo hostname. */
 import * as instagram from './instagram.js';
 import * as x from './x.js';
+import * as tiktok from './tiktok.js';
 
-export const platforms = [instagram, x];
+export const platforms = [instagram, x, tiktok];
 
 /** Retorna {platform, parsed} ou null se nenhuma plataforma reconhecer o link. */
 export function detectPlatform(line) {

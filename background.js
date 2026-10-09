@@ -3,6 +3,7 @@ import { PlatformError } from './platforms/common.js';
 import { platforms, detectPlatform, parseLinks } from './platforms/index.js';
 import * as instagram from './platforms/instagram.js';
 import * as x from './platforms/x.js';
+import * as tiktok from './platforms/tiktok.js';
 
 const MAX_LOG = 500;
 let minDelayMs = 1500;
@@ -130,6 +131,7 @@ async function processLine(route) {
       log('erro', `✖ ${f.filename}: ${e.message}`);
     }
   }
+  if (failed && platform.downloadHint) log('aviso', platform.downloadHint);
   if (failed) throw new PlatformError('download', `${failed} de ${files.length} arquivo(s) falharam`);
 }
 
@@ -219,6 +221,10 @@ const TAB_PATTERNS = [
   'https://twitter.com/*',
   'https://www.twitter.com/*',
   'https://mobile.twitter.com/*',
+  'https://www.tiktok.com/*',
+  'https://m.tiktok.com/*',
+  'https://vm.tiktok.com/*',
+  'https://vt.tiktok.com/*',
 ];
 
 async function handleMessage(msg, sender) {
@@ -260,7 +266,7 @@ async function handleMessage(msg, sender) {
     case 'getState':
       return getState();
     case 'selfTest': {
-      const results = [...instagram.runSelfTest(), ...x.runSelfTest()];
+      const results = [...instagram.runSelfTest(), ...x.runSelfTest(), ...tiktok.runSelfTest()];
       results.forEach((r) => addLog(r.ok ? 'ok' : 'erro', `${r.ok ? 'PASSOU' : 'FALHOU'}: ${r.name}`));
       return { ok: results.every((r) => r.ok), results };
     }

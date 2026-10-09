@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import * as ig from '../platforms/instagram.js';
 import * as x from '../platforms/x.js';
-import { sanitizeFilename } from '../platforms/common.js';
+import * as tt from '../platforms/tiktok.js';
+import { sanitizeFilename, PlatformError } from '../platforms/common.js';
 import { detectPlatform, parseLinks } from '../platforms/index.js';
 
 const bg = { ...ig, sanitizeFilename, parseLinks };
@@ -271,6 +272,68 @@ test('detecta a plataforma pelo hostname', () => {
 test('autoteste embutido do módulo X', () => {
   assert.ok(x.runSelfTest().every((r) => r.ok));
 });
+
+
+console.log('TikTok');
+const ttPage = (detail) =>
+  `<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({ __DEFAULT_SCOPE__: { 'webapp.video-detail': detail } })}</script></html>`;
+const bi = (codec, bitrate, url, extra = {}) => ({ CodecType: codec, Bitrate: bitrate, PlayAddr: { UrlList: [url, url + '#2'], Width: 576, ...extra } });
+const ttItem = (o = {}) => ({ id: '6718335390845095173', author: { uniqueId: 'scout2015' }, video: { playAddr: 'https://v/play.mp4', bitrateInfo: [bi('h265_hvc1', 3000000, 'https://v/h265.mp4'), bi('h264', 1000000, 'https://v/h264-low.mp4'), bi('h264', 2240963, 'https://v/h264-best.mp4')] }, ...o });
+
+test('links: vídeo, foto, m.tiktok /v/, curtos e parâmetros', () => {
+  const id = '6718335390845095173';
+  const v = tt.parse(`https://www.tiktok.com/@scout2015/video/${id}?is_from_webapp=1&sender_device=pc`);
+  assert.deepEqual(v, { type: 'post', kind: 'video', id, username: 'scout2015', normalized: `https://www.tiktok.com/@scout2015/video/${id}` });
+  assert.equal(tt.parse(`https://www.tiktok.com/@a.b_c/photo/${id}`).kind, 'photo');
+  assert.equal(tt.parse(`tiktok.com/@scout2015/video/${id}`).id, id);
+  const old = tt.parse(`https://m.tiktok.com/v/${id}.html`);
+  assert.equal(old.id, id);
+  assert.equal(old.username, null);
+  assert.equal(old.normalized, `https://www.tiktok.com/@_/video/${id}`);
+  assert.deepEqual(tt.parse('https://vm.tiktok.com/ZSabc123/?x=1'), { type: 'short', code: 'ZSabc123', normalized: 'https://vm.tiktok.com/ZSabc123/' });
+  assert.equal(tt.parse('https://vt.tiktok.com/ZSabc123').type, 'short');
+  assert.equal(tt.parse('https://www.tiktok.com/t/ZTabc123/').normalized, 'https://www.tiktok.com/t/ZTabc123/');
+});
+test('links inválidos do TikTok', () => {
+  for (const bad of ['', 'https://www.tiktok.com/', 'https://www.tiktok.com/@foo', 'https://www.tiktok.com/@foo/video/abc', 'https://tiktok.com.evil.com/@a/video/1', 'https://vm.tiktok.com/', 'https://example.com/@a/video/1']) {
+    assert.equal(tt.parse(bad), null, bad);
+  }
+});
+test('página: extrai o item; apagado, privado e verificação (sem JSON)', () => {
+  const ok = tt.extractItem(ttPage({ statusCode: 0, itemInfo: { itemStruct: ttItem() } }));
+  assert.equal(ok.state, 'ok');
+  assert.equal(ok.item.id, '6718335390845095173');
+  assert.equal(tt.extractItem(ttPage({ statusCode: 10204, statusMsg: "item doesn't exist" })).state, 'gone');
+  assert.equal(tt.extractItem(ttPage({ statusCode: 10222 })).state, 'private');
+  assert.equal(tt.extractItem('<html>Verify to continue</html>').state, 'blocked');
+  assert.equal(tt.extractItem('<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">{quebrado</script>').state, 'blocked');
+  assert.equal(tt.extractItem(ttPage(undefined)).state, 'blocked');
+});
+test('vídeo: prefere h264 de maior bitrate; sem bitrateInfo usa playAddr/downloadAddr', () => {
+  assert.equal(tt.pickVideoUrl(ttItem()), 'https://v/h264-best.mp4');
+  const onlyH265 = ttItem({ video: { bitrateInfo: [bi('h265_hvc1', 1, 'https://v/a.mp4'), bi('h265_hvc1', 9, 'https://v/b.mp4')] } });
+  assert.equal(tt.pickVideoUrl(onlyH265), 'https://v/b.mp4');
+  assert.equal(tt.pickVideoUrl(ttItem({ video: { playAddr: 'https://v/play.mp4' } })), 'https://v/play.mp4');
+  assert.equal(tt.pickVideoUrl(ttItem({ video: { playAddr: '', downloadAddr: 'https://v/dl.mp4' } })), 'https://v/dl.mp4');
+  assert.equal(tt.pickVideoUrl({ video: {} }), null);
+});
+test('arquivos: TikTok/{usuario} - {id}.mp4; foto única; várias fotos _1.._n', () => {
+  assert.deepEqual(tt.buildFiles(ttItem()).map((f) => f.filename), ['TikTok/scout2015 - 6718335390845095173.mp4']);
+  const photos = (n) => ({ id: '77', author: { uniqueId: 'foto' }, imagePost: { images: Array.from({ length: n }, (_, i) => ({ imageURL: { urlList: [`https://p/${i}.webp?x=1`, 'https://p/alt'] } })) } });
+  assert.deepEqual(tt.buildFiles(photos(1)).map((f) => f.filename), ['TikTok/foto - 77.webp']);
+  assert.deepEqual(tt.buildFiles(photos(3)).map((f) => f.filename), ['TikTok/foto - 77_1.webp', 'TikTok/foto - 77_2.webp', 'TikTok/foto - 77_3.webp']);
+  assert.deepEqual(tt.buildFiles({ id: '5', video: { playAddr: 'https://v/p.mp4' } }, 'viaLink').map((f) => f.filename), ['TikTok/viaLink - 5.mp4']);
+  assert.deepEqual(tt.buildFiles({ id: '5' }), []);
+});
+test('roteamento: links do TikTok vão para o módulo certo; 429/verificação são globais', () => {
+  assert.equal(detectPlatform('https://vm.tiktok.com/ZSabc123/').platform.tag, 'TT');
+  assert.equal(detectPlatform('https://www.tiktok.com/@a/video/1').platform.tag, 'TT');
+  assert.equal(tt.isFatal(new PlatformError('rate', '')), true);
+  assert.equal(tt.isFatal(new PlatformError('blocked', '')), true);
+  assert.equal(tt.isFatal(new PlatformError('notfound', '')), false);
+  assert.equal(tt.isFatal(new PlatformError('auth', '')), false); // vídeo privado não derruba os demais
+});
+test('autoteste embutido do módulo TikTok', () => assert.ok(tt.runSelfTest().every((r) => r.ok)));
 
 console.log('Auto-teste embutido');
 test('runSelfTest() do background.js', () => {

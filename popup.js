@@ -84,7 +84,7 @@ async function addTabs(onlyActive) {
     ? `${fresh.length} link(s) adicionado(s)`
     : urls.length
       ? 'Já está na lista'
-      : 'Nenhum link do Instagram/X aberto';
+      : 'Nenhum link do Instagram/X/TikTok aberto';
 }
 
 document.getElementById('addCurrent').addEventListener('click', () => addTabs(true));
