@@ -1,7 +1,12 @@
 'use strict';
-// Rode com: node tests/test.js
-const assert = require('node:assert/strict');
-const bg = require('../background.js');
+// Rode com: node tests/test.js  (ou npm test, que também roda tests/flow.js)
+import assert from 'node:assert/strict';
+import * as ig from '../platforms/instagram.js';
+import * as x from '../platforms/x.js';
+import { sanitizeFilename } from '../platforms/common.js';
+import { detectPlatform, parseLinks } from '../platforms/index.js';
+
+const bg = { ...ig, sanitizeFilename, parseLinks };
 
 let passed = 0;
 function test(name, fn) {
@@ -152,6 +157,119 @@ test('404 → apagado/privado; 429 → muitas requisições', () => {
 });
 test('items vazio → apagado/privado', () => {
   assert.throws(() => bg.parseInfoResponse(200, '{"items":[]}'), { code: 'notfound' });
+});
+
+
+console.log('X: link e token');
+test('token da syndication (valores fixados; o tweet 20 foi confirmado contra o endpoint real)', () => {
+  assert.equal(x.syndicationToken('20'), '6dq1a2xwd93');
+  assert.equal(x.syndicationToken('1628832338187636740'), '3y54libozsy');
+  assert.equal(x.syndicationToken('1'), 'bhi2ay3f28n');
+  assert.match(x.syndicationUrl('20'), /tweet-result\?id=20&token=6dq1a2xwd93&lang=pt$/);
+});
+test('x.com, twitter.com, mobile.twitter.com, /i/status, /video/1, /photo/1, ?s=20&t=', () => {
+  const id = '1628832338187636740'; // maior que 2^53: precisa continuar string
+  const cases = [
+    [`https://x.com/foo/status/${id}`, 'foo'],
+    [`https://twitter.com/foo/status/${id}?s=20&t=AbC_dE`, 'foo'],
+    [`https://mobile.twitter.com/foo/status/${id}`, 'foo'],
+    [`https://x.com/foo/status/${id}/video/1`, 'foo'],
+    [`https://x.com/foo/status/${id}/photo/2?s=46`, 'foo'],
+    [`https://x.com/i/status/${id}`, null],
+    [`https://www.x.com/foo/status/${id}/`, 'foo'],
+    [`x.com/foo/status/${id}`, 'foo'],
+  ];
+  for (const [url, user] of cases) {
+    const r = x.parse(url);
+    assert.ok(r, url);
+    assert.equal(r.id, id, url);
+    assert.equal(r.username, user, url);
+    assert.equal(r.normalized, `https://x.com/${user || 'i'}/status/${id}`, url);
+  }
+});
+test('links inválidos do X', () => {
+  for (const bad of ['', 'https://x.com/foo', 'https://x.com/foo/status/abc', 'https://x.com.evil.com/foo/status/1', 'https://example.com/foo/status/1', 'https://www.instagram.com/reel/CwAbC123xyZ/']) {
+    assert.equal(x.parse(bad), null, bad);
+  }
+});
+
+console.log('X: syndication');
+const variants = [
+  { content_type: 'application/x-mpegURL', url: 'https://v/x.m3u8' },
+  { bitrate: 256000, content_type: 'video/mp4', url: 'https://v/low.mp4' },
+  { bitrate: 2176000, content_type: 'video/mp4', url: 'https://v/high.mp4' },
+  { bitrate: 832000, content_type: 'video/mp4', url: 'https://v/mid.mp4' },
+];
+const vid = (u) => ({ type: 'video', video_info: { variants: u || variants } });
+const photoD = (n) => ({ type: 'photo', media_url_https: `https://pbs.twimg.com/media/${n}.jpg` });
+const synd = (o) => JSON.stringify({ __typename: 'Tweet', id_str: '1', user: { screen_name: 'foo' }, ...o });
+
+test('1 vídeo: mp4 de maior bitrate (ignora m3u8)', () => {
+  const r = x.parseSyndication(200, synd({ mediaDetails: [vid()] }));
+  assert.equal(r.state, 'ok');
+  assert.deepEqual(r.media, [{ kind: 'video', url: 'https://v/high.mp4', ext: 'mp4' }]);
+  assert.equal(r.screenName, 'foo');
+  assert.equal(r.quoted, false);
+});
+test('vários vídeos e fotos (fotos com ?name=orig)', () => {
+  const r = x.parseSyndication(200, synd({ mediaDetails: [photoD('A'), vid(), photoD('B')] }));
+  assert.deepEqual(r.media.map((m) => [m.kind, m.url, m.ext]), [
+    ['image', 'https://pbs.twimg.com/media/A.jpg?name=orig', 'jpg'],
+    ['video', 'https://v/high.mp4', 'mp4'],
+    ['image', 'https://pbs.twimg.com/media/B.jpg?name=orig', 'jpg'],
+  ]);
+});
+test('GIF animado (bitrate 0) vira mp4', () => {
+  const gif = { type: 'animated_gif', video_info: { variants: [{ bitrate: 0, content_type: 'video/mp4', url: 'https://v/g.mp4' }] } };
+  const r = x.parseSyndication(200, synd({ mediaDetails: [gif] }));
+  assert.deepEqual(r.media, [{ kind: 'video', url: 'https://v/g.mp4', ext: 'mp4' }]);
+});
+test('tweet sem mídia citando outro com vídeo → baixa o do citado (quoted=true)', () => {
+  const r = x.parseSyndication(200, synd({ mediaDetails: [], quoted_tweet: { user: { screen_name: 'q' }, mediaDetails: [vid()] } }));
+  assert.equal(r.state, 'ok');
+  assert.equal(r.quoted, true);
+  assert.equal(r.screenName, 'foo'); // nome do arquivo usa o autor do tweet do link
+  assert.equal(r.media[0].url, 'https://v/high.mp4');
+});
+test('sem mídia → nomedia; sensível sem mídia → restricted (confere na página)', () => {
+  assert.equal(x.parseSyndication(200, synd({ text: 'oi' })).state, 'nomedia');
+  assert.equal(x.parseSyndication(200, synd({ possibly_sensitive: true })).state, 'restricted');
+});
+test('apagado (404 HTML, {}), tombstone, 429, erro', () => {
+  assert.equal(x.parseSyndication(404, '<!DOCTYPE html>').state, 'gone');
+  assert.equal(x.parseSyndication(200, '{}').state, 'gone');
+  assert.equal(x.parseSyndication(200, JSON.stringify({ __typename: 'TweetTombstone', tombstone: { text: {} } })).state, 'restricted');
+  assert.throws(() => x.parseSyndication(429, ''), { code: 'rate', message: 'Muitas requisições, aguarde alguns minutos' });
+  assert.equal(x.parseSyndication(500, 'oops').state, 'error');
+});
+
+console.log('X: captura da página (fallback)');
+const cap = (id, media, extra = {}) => ({ id, screenName: 'foo', media, quotedId: null, ...extra });
+test('evaluateCapture: ok, citado, sem mídia, tombstone, indeciso', () => {
+  const m = new Map([['1', cap('1', [vid()])]]);
+  assert.equal(x.evaluateCapture(m, '1').status, 'ok');
+  const q = new Map([['1', cap('1', [], { quotedId: '2' })], ['2', cap('2', [vid()])]]);
+  const rq = x.evaluateCapture(q, '1');
+  assert.equal(rq.status, 'ok');
+  assert.equal(rq.quoted, true);
+  assert.equal(x.evaluateCapture(new Map([['1', cap('1', [])]]), '1').status, 'nomedia');
+  assert.equal(x.evaluateCapture(new Map(), '1', true).status, 'tombstone');
+  assert.equal(x.evaluateCapture(new Map([['9', cap('9', [vid()])]]), '1'), null); // outro tweet da conversa
+});
+
+console.log('Roteamento (lista mista)');
+test('detecta a plataforma pelo hostname', () => {
+  const lines = [
+    ['https://www.instagram.com/reel/CwAbC123xyZ/?igsh=1', 'IG'],
+    ['https://x.com/foo/status/1628832338187636740?s=20', 'X'],
+    ['https://twitter.com/foo/status/20', 'X'],
+    ['https://www.instagram.com/stories/foo/3123456789012345678/', 'IG'],
+    ['https://example.com/', null],
+  ];
+  for (const [l, tag] of lines) assert.equal((detectPlatform(l) || {}).platform?.tag ?? null, tag, l);
+});
+test('autoteste embutido do módulo X', () => {
+  assert.ok(x.runSelfTest().every((r) => r.ok));
 });
 
 console.log('Auto-teste embutido');

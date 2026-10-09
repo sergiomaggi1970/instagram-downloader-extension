@@ -1,19 +1,31 @@
 {
   "manifest_version": 3,
-  "name": "Instagram Downloader",
-  "version": "1.0.0",
-  "description": "Baixa vídeos e fotos de reels, posts e stories do Instagram em lote, usando a sua sessão do navegador.",
-  "permissions": ["downloads", "storage", "scripting", "tabs"],
+  "name": "Social Video Downloader",
+  "version": "1.1.0",
+  "description": "Baixa vídeos e fotos do Instagram (reels, posts, stories) e do X em lote, usando a sua sessão do navegador.",
+  "permissions": [
+    "downloads",
+    "storage",
+    "scripting",
+    "tabs"
+  ],
   "host_permissions": [
     "https://www.instagram.com/*",
     "https://*.cdninstagram.com/*",
-    "https://*.fbcdn.net/*"
+    "https://*.fbcdn.net/*",
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://mobile.twitter.com/*",
+    "https://cdn.syndication.twimg.com/*",
+    "https://video.twimg.com/*",
+    "https://pbs.twimg.com/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "action": {
-    "default_title": "Instagram Downloader",
+    "default_title": "Social Video Downloader",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -23,8 +35,43 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.instagram.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.instagram.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content-x-capture.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content-x-bridge.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content-x.js"
+      ],
       "run_at": "document_idle"
     }
   ],

@@ -1,323 +1,15 @@
-'use strict';
+/* Service worker (módulo): fila, roteamento por plataforma, log e downloads. */
+import { PlatformError } from './platforms/common.js';
+import { platforms, detectPlatform, parseLinks } from './platforms/index.js';
+import * as instagram from './platforms/instagram.js';
+import * as x from './platforms/x.js';
 
-/* ------------------------------------------------------------------ *
- * Constantes
- * ------------------------------------------------------------------ */
-
-const ALPHABET =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-const APP_ID = '936619743392459';
-const FOLDER = 'Instagram';
 const MAX_LOG = 500;
-const MIN_DELAY_MS = 1500;
-const MAX_DELAY_MS = 3000;
+let minDelayMs = 1500;
+let maxDelayMs = 3000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
-const MSG = {
-  LOGIN: 'Faça login no Instagram neste navegador',
-  NOT_FOUND: 'Post apagado ou privado',
-  RATE: 'Muitas requisições, aguarde alguns minutos',
-  INVALID: 'Link não reconhecido',
-};
-
-class IGError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.name = 'IGError';
-    this.code = code; // 'auth' | 'notfound' | 'rate' | 'invalid' | 'http' | 'empty' | 'download'
-  }
-}
-
-/* ------------------------------------------------------------------ *
- * Funções puras (testáveis em Node: ver tests/test.js)
- * ------------------------------------------------------------------ */
-
-/** Converte o shortcode (11 primeiros caracteres) em media_id decimal (string). */
-function shortcodeToMediaId(shortcode) {
-  const code = String(shortcode).slice(0, 11);
-  if (!code) throw new IGError('invalid', MSG.INVALID);
-  let id = 0n;
-  for (const ch of code) {
-    const idx = ALPHABET.indexOf(ch);
-    if (idx < 0) throw new IGError('invalid', MSG.INVALID);
-    id = id * 64n + BigInt(idx);
-  }
-  return id.toString();
-}
-
-/**
- * Identifica o tipo do link e normaliza (sem utm_source, igsh etc.).
- * Retorna {type:'media', kind, shortcode, normalized}
- *      ou {type:'story', username, mediaId, normalized}
- *      ou null se o link não for reconhecido.
- */
-function parseInstagramUrl(raw) {
-  let text = String(raw || '').trim();
-  if (!text) return null;
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = 'https://' + text;
-
-  let u;
-  try {
-    u = new URL(text);
-  } catch {
-    return null;
-  }
-  if (!/^(www\.|m\.)?instagram\.com$/i.test(u.hostname)) return null;
-
-  const path = u.pathname; // query e hash ficam de fora de propósito
-
-  const story = path.match(/^\/stories\/([^/]+)\/(\d+)\/?/);
-  if (story && story[1] !== 'highlights') {
-    return {
-      type: 'story',
-      username: story[1],
-      mediaId: story[2],
-      normalized: `https://www.instagram.com/stories/${story[1]}/${story[2]}/`,
-    };
-  }
-
-  const media = path.match(/^(?:\/[^/]+)?\/(reel|reels|p|tv)\/([A-Za-z0-9_-]{5,})/);
-  if (media) {
-    const kind = media[1] === 'reels' ? 'reel' : media[1];
-    return {
-      type: 'media',
-      kind,
-      shortcode: media[2],
-      normalized: `https://www.instagram.com/${kind}/${media[2]}/`,
-    };
-  }
-  return null;
-}
-
-/** Remove caracteres inválidos no Windows/Mac e emojis; mantém acentos. */
-function sanitizeFilename(name) {
-  let s = String(name ?? '').normalize('NFC');
-  s = s.replace(
-    /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}‍️⃣]/gu,
-    ''
-  );
-  s = s.replace(/[\\/:*?"<>|\u0000-\u001F\u007F]/g, '');
-  s = s.replace(/\s+/g, ' ').trim();
-  s = s.replace(/^\.+/, '').replace(/[. ]+$/, '');
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(s)) s = '_' + s;
-  s = Array.from(s).slice(0, 120).join('').trim();
-  return s || 'instagram';
-}
-
-/** Escolhe o candidato de maior largura (desempate pela altura). */
-function pickBest(list) {
-  if (!Array.isArray(list) || !list.length) return null;
-  return list.reduce((best, cur) => {
-    const bw = best.width || 0;
-    const cw = cur.width || 0;
-    if (cw !== bw) return cw > bw ? cur : best;
-    return (cur.height || 0) > (best.height || 0) ? cur : best;
-  });
-}
-
-function extFromUrl(url, fallback) {
-  try {
-    const m = new URL(url).pathname.match(/\.([a-z0-9]{3,4})$/i);
-    if (m && ['jpg', 'jpeg', 'png', 'webp', 'heic'].includes(m[1].toLowerCase())) {
-      return m[1].toLowerCase();
-    }
-  } catch {
-    /* ignora */
-  }
-  return fallback;
-}
-
-function mediaFromNode(node) {
-  const video = pickBest(node && node.video_versions);
-  if (video && video.url) return { kind: 'video', url: video.url, ext: 'mp4' };
-  const image = pickBest(node && node.image_versions2 && node.image_versions2.candidates);
-  if (image && image.url) {
-    return { kind: 'image', url: image.url, ext: extFromUrl(image.url, 'jpg') };
-  }
-  return null;
-}
-
-/** Vídeo único, foto única ou carrossel (vídeos + imagens). */
-function collectMedia(item) {
-  const nodes =
-    Array.isArray(item.carousel_media) && item.carousel_media.length
-      ? item.carousel_media
-      : [item];
-  return nodes.map(mediaFromNode).filter(Boolean);
-}
-
-/** "Instagram/{username} - {shortcode}[_n].ext" */
-function buildFilenames(media, username, code) {
-  const base = sanitizeFilename(`${username} - ${code}`);
-  const multiple = media.length > 1;
-  return media.map((m, i) => `${FOLDER}/${base}${multiple ? `_${i + 1}` : ''}.${m.ext}`);
-}
-
-/** Transforma a resposta HTTP do endpoint media/info em item ou lança IGError. */
-function parseInfoResponse(status, text, finalUrl) {
-  if (status === 429) throw new IGError('rate', MSG.RATE);
-  if (status === 404) throw new IGError('notfound', MSG.NOT_FOUND);
-  if (status === 401 || status === 403) throw new IGError('auth', MSG.LOGIN);
-  if (finalUrl && /\/accounts\/login/i.test(finalUrl)) throw new IGError('auth', MSG.LOGIN);
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    // HTML (página de login) em vez de JSON
-    throw new IGError('auth', MSG.LOGIN);
-  }
-  if (data && (data.message === 'login_required' || data.require_login)) {
-    throw new IGError('auth', MSG.LOGIN);
-  }
-  if (status === 400 && data && /not found|media/i.test(String(data.message || ''))) {
-    throw new IGError('notfound', MSG.NOT_FOUND);
-  }
-  if (status >= 400) throw new IGError('http', `Erro HTTP ${status}`);
-
-  const item = data && Array.isArray(data.items) ? data.items[0] : null;
-  if (!item) throw new IGError('notfound', MSG.NOT_FOUND);
-  return item;
-}
-
-function parseLinks(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-}
-
-/** Auto-teste: pares conhecidos shortcode → media_id e demais verificações. */
-function runSelfTest() {
-  const results = [];
-  const check = (name, actual, expected) => {
-    const ok = JSON.stringify(actual) === JSON.stringify(expected);
-    results.push({ name, ok, actual, expected });
-  };
-  check('AAAAAAAAAAB → 1', shortcodeToMediaId('AAAAAAAAAAB'), '1');
-  check('BAAAAAAAAAA → 64^10', shortcodeToMediaId('BAAAAAAAAAA'), (64n ** 10n).toString());
-  check('usa só 11 caracteres', shortcodeToMediaId('AAAAAAAAAABxyz'), '1');
-  check('"-_" no fim → 62*64+63', shortcodeToMediaId('AAAAAAAAA-_'), String(62 * 64 + 63));
-  check(
-    'URL sem utm/igsh',
-    parseInstagramUrl('https://www.instagram.com/reel/Cabc123xyZ_/?igsh=abc&utm_source=ig_web')
-      .normalized,
-    'https://www.instagram.com/reel/Cabc123xyZ_/'
-  );
-  check('story', parseInstagramUrl('https://www.instagram.com/stories/fulano/3123456789012345678/').mediaId, '3123456789012345678');
-  check('link inválido', parseInstagramUrl('https://example.com/reel/abc12345/'), null);
-  check('nome com acento e emoji', sanitizeFilename('José 🎉: ação/?'), 'José ação');
-  return results;
-}
-
-/* ------------------------------------------------------------------ *
- * Rede: busca dos dados da mídia
- * ------------------------------------------------------------------ */
-
-const INFO_URL = (id) => `https://www.instagram.com/api/v1/media/${id}/info/`;
-
-async function directFetch(mediaId) {
-  const res = await fetch(INFO_URL(mediaId), {
-    headers: { 'X-IG-App-ID': APP_ID, 'X-Requested-With': 'XMLHttpRequest' },
-    credentials: 'include',
-  });
-  const text = await res.text();
-  return { status: res.status, text, url: res.url };
-}
-
-/** Executado DENTRO da aba do Instagram (same-origin, leva os cookies). */
-async function pageFetch(mediaId, appId) {
-  try {
-    const res = await fetch(`https://www.instagram.com/api/v1/media/${mediaId}/info/`, {
-      headers: { 'X-IG-App-ID': appId, 'X-Requested-With': 'XMLHttpRequest' },
-      credentials: 'include',
-    });
-    const text = await res.text();
-    return { status: res.status, text, url: res.url };
-  } catch (e) {
-    return { error: String((e && e.message) || e) };
-  }
-}
-
-let helperTab = null; // {id, created}
-
-function waitTabComplete(tabId, timeout = 30000) {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      clearTimeout(timer);
-      resolve();
-    };
-    const onUpdated = (id, info) => {
-      if (id === tabId && info.status === 'complete') finish();
-    };
-    const timer = setTimeout(finish, timeout);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    chrome.tabs.get(tabId).then((t) => t.status === 'complete' && finish(), finish);
-  });
-}
-
-async function getHelperTab() {
-  if (helperTab) {
-    try {
-      await chrome.tabs.get(helperTab.id);
-      return helperTab.id;
-    } catch {
-      helperTab = null;
-    }
-  }
-  const tabs = await chrome.tabs.query({ url: 'https://www.instagram.com/*' });
-  if (tabs.length) {
-    const tab = tabs.find((t) => t.status === 'complete') || tabs[0];
-    helperTab = { id: tab.id, created: false };
-    await waitTabComplete(tab.id);
-    return tab.id;
-  }
-  const tab = await chrome.tabs.create({ url: 'https://www.instagram.com/', active: false });
-  helperTab = { id: tab.id, created: true };
-  await waitTabComplete(tab.id);
-  return tab.id;
-}
-
-async function closeHelperTab() {
-  const h = helperTab;
-  helperTab = null;
-  if (h && h.created) {
-    try {
-      await chrome.tabs.remove(h.id);
-    } catch {
-      /* já fechada */
-    }
-  }
-}
-
-async function tabFetch(mediaId) {
-  const tabId = await getHelperTab();
-  const injected = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: pageFetch,
-    args: [String(mediaId), APP_ID],
-  });
-  const result = injected && injected[0] && injected[0].result;
-  if (!result) throw new IGError('http', 'Não foi possível consultar o Instagram pela aba');
-  if (result.error) throw new IGError('http', `Erro de rede: ${result.error}`);
-  return result;
-}
-
-async function fetchItem(mediaId) {
-  try {
-    const r = await directFetch(mediaId);
-    return parseInfoResponse(r.status, r.text, r.url);
-  } catch (e) {
-    // Só 401/403/login (auth) ou falha de rede justificam o fallback.
-    if (e instanceof IGError && e.code !== 'auth') throw e;
-  }
-  const r = await tabFetch(mediaId);
-  return parseInfoResponse(r.status, r.text, r.url);
-}
+const INVALID = 'Link não reconhecido';
 
 /* ------------------------------------------------------------------ *
  * Downloads
@@ -337,18 +29,18 @@ function waitDownload(id) {
       if (delta.id !== id || !delta.state) return;
       if (delta.state.current === 'complete') finish();
       else if (delta.state.current === 'interrupted') {
-        finish(new IGError('download', `Download interrompido (${(delta.error && delta.error.current) || 'erro'})`));
+        finish(new PlatformError('download', `Download interrompido (${(delta.error && delta.error.current) || 'erro'})`));
       }
     };
     const timer = setTimeout(
-      () => finish(new IGError('download', 'Tempo esgotado no download')),
+      () => finish(new PlatformError('download', 'Tempo esgotado no download')),
       DOWNLOAD_TIMEOUT_MS
     );
     chrome.downloads.onChanged.addListener(onChanged);
     chrome.downloads.search({ id }).then((items) => {
       const it = items && items[0];
       if (it && it.state === 'complete') finish();
-      else if (it && it.state === 'interrupted') finish(new IGError('download', 'Download interrompido'));
+      else if (it && it.state === 'interrupted') finish(new PlatformError('download', 'Download interrompido'));
     });
   });
 }
@@ -360,7 +52,7 @@ async function downloadFile(url, filename) {
     conflictAction: 'uniquify',
     saveAs: false,
   });
-  if (id === undefined) throw new IGError('download', 'O Chrome recusou o download');
+  if (id === undefined) throw new PlatformError('download', 'O Chrome recusou o download');
   await waitDownload(id);
 }
 
@@ -394,8 +86,10 @@ function persist() {
   return chrome.storage.local.set({ log: logEntries, stats });
 }
 
-function addLog(level, text) {
+/** `platform` é a tag curta ('IG' | 'X'); o popup mostra como [IG] / [X]. */
+function addLog(level, text, platform) {
   const entry = { t: Date.now(), level, text };
+  if (platform) entry.platform = platform;
   logEntries.push(entry);
   if (logEntries.length > MAX_LOG) logEntries = logEntries.slice(-MAX_LOG);
   persist();
@@ -416,39 +110,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Espera com checagem do botão Parar. */
 async function politeDelay(ms) {
   const end = Date.now() + ms;
-  while (Date.now() < end && !stopRequested) await sleep(100);
+  while (Date.now() < end && !stopRequested) await sleep(Math.min(100, ms));
 }
 
-async function processLine(line) {
-  const parsed = parseInstagramUrl(line);
-  if (!parsed) throw new IGError('invalid', MSG.INVALID);
+async function processLine(route) {
+  const { platform, parsed } = route;
+  const log = (level, text) => addLog(level, text, platform.tag);
 
-  addLog('info', `Processando ${parsed.normalized}`);
-  const mediaId = parsed.type === 'story' ? parsed.mediaId : shortcodeToMediaId(parsed.shortcode);
-  const item = await fetchItem(mediaId);
-
-  const username =
-    (item.user && item.user.username) ||
-    (item.owner && item.owner.username) ||
-    parsed.username ||
-    'instagram';
-  const code = parsed.type === 'story' ? parsed.mediaId : parsed.shortcode;
-
-  const media = collectMedia(item);
-  if (!media.length) throw new IGError('empty', 'Nenhuma mídia encontrada neste link');
-  const names = buildFilenames(media, username, code);
+  log('info', `Processando ${parsed.normalized}`);
+  const files = await platform.resolve(parsed, { log });
 
   let failed = 0;
-  for (let i = 0; i < media.length; i++) {
+  for (const f of files) {
     try {
-      await downloadFile(media[i].url, names[i]);
-      addLog('ok', `✔ ${names[i]}`);
+      await downloadFile(f.url, f.filename);
+      log('ok', `✔ ${f.filename}`);
     } catch (e) {
       failed++;
-      addLog('erro', `✖ ${names[i]}: ${e.message}`);
+      log('erro', `✖ ${f.filename}: ${e.message}`);
     }
   }
-  if (failed) throw new IGError('download', `${failed} de ${media.length} arquivo(s) falharam`);
+  if (failed) throw new PlatformError('download', `${failed} de ${files.length} arquivo(s) falharam`);
 }
 
 async function runQueue() {
@@ -463,22 +145,32 @@ async function runQueue() {
     let needDelay = false; // só espera quando o item anterior fez requisição
     while (queue.length && !stopRequested) {
       if (needDelay) {
-        await politeDelay(MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS));
+        await politeDelay(minDelayMs + Math.random() * (maxDelayMs - minDelayMs));
         if (stopRequested) break;
       }
       const line = queue.shift();
       needDelay = true;
+      const route = detectPlatform(line);
       try {
-        await processLine(line);
+        if (!route) throw new PlatformError('invalid', INVALID);
+        await processLine(route);
         stats.ok++;
       } catch (e) {
         stats.fail++;
-        const code = e instanceof IGError ? e.code : 'unknown';
-        addLog('erro', `${e.message || e} — ${line}`);
+        const code = e instanceof PlatformError ? e.code : 'unknown';
+        addLog('erro', `${e.message || e} — ${line}`, route && route.platform.tag);
         if (code === 'invalid') needDelay = false;
-        if (code === 'auth' || code === 'rate') {
-          if (queue.length) addLog('aviso', `Fila interrompida; ${queue.length} link(s) não processado(s)`);
-          queue = [];
+        if (route && route.platform.isFatal(e)) {
+          // Falha que vale para a plataforma inteira (sem login, 429): descarta os links dela (e os não reconhecidos).
+          const before = queue.length;
+          queue = queue.filter((l) => {
+            const r = detectPlatform(l);
+            return r && r.platform !== route.platform;
+          });
+          const dropped = before - queue.length;
+          if (dropped) {
+            addLog('aviso', `Fila interrompida; ${dropped} link(s) não processado(s)`, route.platform.tag);
+          }
         }
       }
       broadcastState();
@@ -491,7 +183,13 @@ async function runQueue() {
   } finally {
     clearInterval(keepAliveTimer);
     keepAliveTimer = null;
-    await closeHelperTab();
+    for (const p of platforms) {
+      try {
+        await p.cleanup();
+      } catch {
+        /* ignora */
+      }
+    }
     running = false;
     stopRequested = false;
     addLog(stats.fail ? 'aviso' : 'ok', `${stats.ok} baixado(s) · ${stats.fail} falha(s)`);
@@ -511,25 +209,37 @@ function enqueue(lines) {
 }
 
 /* ------------------------------------------------------------------ *
- * Mensagens (popup / content script)
+ * Mensagens (popup / content scripts)
  * ------------------------------------------------------------------ */
 
-async function handleMessage(msg) {
+const TAB_PATTERNS = [
+  'https://www.instagram.com/*',
+  'https://x.com/*',
+  'https://www.x.com/*',
+  'https://twitter.com/*',
+  'https://www.twitter.com/*',
+  'https://mobile.twitter.com/*',
+];
+
+async function handleMessage(msg, sender) {
   await ready;
   switch (msg && msg.type) {
     case 'start':
       return { ok: true, queued: enqueue(parseLinks(msg.text)) };
     case 'downloadUrl':
       return { ok: true, queued: enqueue(parseLinks(msg.url)) };
+    case 'xCapture':
+      x.handleCapture(sender && sender.tab && sender.tab.id, msg.payload);
+      return { ok: true };
     case 'listTabs': {
-      const tabs = await chrome.tabs.query({ url: 'https://www.instagram.com/*' });
+      const tabs = await chrome.tabs.query({ url: TAB_PATTERNS });
       const seen = new Set();
       const urls = [];
       for (const tab of tabs.sort((a, b) => a.index - b.index)) {
-        const p = parseInstagramUrl(tab.url);
-        if (p && !seen.has(p.normalized)) {
-          seen.add(p.normalized);
-          urls.push({ url: p.normalized, active: tab.active, windowId: tab.windowId });
+        const route = detectPlatform(tab.url);
+        if (route && !seen.has(route.parsed.normalized)) {
+          seen.add(route.parsed.normalized);
+          urls.push({ url: route.parsed.normalized, active: tab.active, windowId: tab.windowId });
         }
       }
       return { ok: true, urls };
@@ -550,7 +260,7 @@ async function handleMessage(msg) {
     case 'getState':
       return getState();
     case 'selfTest': {
-      const results = runSelfTest();
+      const results = [...instagram.runSelfTest(), ...x.runSelfTest()];
       results.forEach((r) => addLog(r.ok ? 'ok' : 'erro', `${r.ok ? 'PASSOU' : 'FALHOU'}: ${r.name}`));
       return { ok: results.every((r) => r.ok), results };
     }
@@ -560,24 +270,14 @@ async function handleMessage(msg) {
 }
 
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    handleMessage(msg).then(sendResponse, (e) => sendResponse({ ok: false, error: String(e) }));
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    handleMessage(msg, sender).then(sendResponse, (e) => sendResponse({ ok: false, error: String(e) }));
     return true; // resposta assíncrona
   });
 }
 
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    IGError,
-    MSG,
-    shortcodeToMediaId,
-    parseInstagramUrl,
-    sanitizeFilename,
-    pickBest,
-    collectMedia,
-    buildFilenames,
-    parseInfoResponse,
-    parseLinks,
-    runSelfTest,
-  };
+/** Só para os testes: encurta o intervalo entre links. */
+export function configureDelay(min, max) {
+  minDelayMs = min;
+  maxDelayMs = max;
 }

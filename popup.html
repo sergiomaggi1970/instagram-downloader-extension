@@ -2,14 +2,16 @@
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
-    <title>Instagram Downloader</title>
+    <title>Social Video Downloader</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h1>⬇ Instagram Downloader</h1>
+    <h1>⬇ Social Video Downloader</h1>
+    <div class="subtitle">Instagram · X</div>
 
-    <label for="links" class="hint">Cole os links (reels, posts, stories), um por linha. Linhas com # são ignoradas.</label>
-    <textarea id="links" spellcheck="false" placeholder="https://www.instagram.com/reel/XXXXXXXXXXX/"></textarea>
+    <label for="links" class="hint">Cole os links abaixo. Linhas com # são ignoradas.</label>
+    <textarea id="links" spellcheck="false" placeholder="https://www.instagram.com/reel/XXXXXXXXXXX/&#10;https://x.com/usuario/status/1234567890"></textarea>
+    <div class="hint help">Um link por linha · Instagram e X suportados</div>
 
     <div class="tabs-row">
       <button id="addCurrent" class="small">＋ Aba atual</button>

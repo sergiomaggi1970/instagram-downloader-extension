@@ -22,7 +22,14 @@ function appendLog(entry) {
   text.className = entry.level || 'info';
   text.textContent = entry.text;
 
-  line.append(time, text);
+  line.append(time);
+  if (entry.platform) {
+    const plat = document.createElement('span');
+    plat.className = 'plat ' + entry.platform;
+    plat.textContent = `[${entry.platform}]`;
+    line.append(plat);
+  }
+  line.append(text);
   $log.appendChild(line);
   if (nearBottom) $log.scrollTop = $log.scrollHeight;
 }
@@ -77,7 +84,7 @@ async function addTabs(onlyActive) {
     ? `${fresh.length} link(s) adicionado(s)`
     : urls.length
       ? 'Já está na lista'
-      : 'Nenhum reel/post/story aberto';
+      : 'Nenhum link do Instagram/X aberto';
 }
 
 document.getElementById('addCurrent').addEventListener('click', () => addTabs(true));

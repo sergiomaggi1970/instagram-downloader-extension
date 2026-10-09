@@ -30,7 +30,7 @@ body {
 }
 
 h1 {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 18px;
   font-weight: 700;
   color: var(--accent);
@@ -164,4 +164,25 @@ button.small {
 
 .tabs-row .hint {
   margin: 0;
+}
+
+.subtitle {
+  margin: 2px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.help {
+  margin: 6px 0 0;
+}
+
+.log .plat {
+  margin-right: 6px;
+  font-weight: 700;
+}
+.log .plat.IG {
+  color: #e1306c;
+}
+.log .plat.X {
+  color: var(--text);
 }
