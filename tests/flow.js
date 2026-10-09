@@ -92,6 +92,10 @@ const igMediaId = { carousel: shortcodeToMediaId('CwAbC123xyZ') };
 // reels usam outro shortcode, para o mock devolver o item certo
 
 const noop = { addListener() {}, removeListener() {} };
+const emitter = () => { const fns = []; return { fns, addListener: (fn) => fns.push(fn), removeListener: (fn) => { const i = fns.indexOf(fn); if (i >= 0) fns.splice(i, 1); } }; };
+const dlChanged = emitter();
+const dlDetermining = emitter();
+const createdUrls = [];
 globalThis.chrome = {
   runtime: {
     onMessage: { addListener: (f) => (messageHandler = f) },
@@ -102,6 +106,7 @@ globalThis.chrome = {
   tabs: {
     query: async () => [],
     create: async ({ url }) => {
+      createdUrls.push(url);
       const id = ++tabSeq;
       const payload = captureForTab(url);
       if (payload) setTimeout(() => messageHandler({ type: 'xCapture', payload }, { tab: { id } }, () => {}), 5);
@@ -119,7 +124,7 @@ globalThis.chrome = {
         : [{ result: false }],
   },
   declarativeNetRequest: { updateSessionRules: async (r) => ttRules.push(r) },
-  downloads: { download: async (o) => { downloads.push(o); return downloads.length; }, search: async () => [{ state: 'complete' }], onChanged: noop },
+  downloads: { download: async (o) => { downloads.push(o); return downloads.length; }, search: async () => [{ state: 'complete' }], onChanged: dlChanged, onDeterminingFilename: dlDetermining },
 };
 
 const bg = await import('../background.js');
@@ -132,6 +137,7 @@ async function run(text) {
   logs.length = 0;
   downloads.length = 0;
   closedTabs.length = 0;
+  createdUrls.length = 0;
   await new Promise((r) => messageHandler({ type: 'start', text }, {}, r));
   for (let i = 0; i < 200; i++) {
     await new Promise((r) => setTimeout(r, 25));
@@ -251,12 +257,28 @@ await scenario('sem login: erro claro e fila do Instagram interrompida (como ant
   assert.match(t, /0 baixado\(s\) · 1 falha\(s\)/);
 });
 
+// A página do TikTok "baixa" o blob: dispara onDeterminingFilename como o Chrome faria
+let pageMode = 'ok'; // 'ok' | '403' (o servidor de vídeos recusa a busca feita pela página)
+let dlSeq = 500;
+async function simulatePageDownload(url, basename) {
+  if (pageMode === '403') return { ok: false, status: 403 };
+  const item = { id: ++dlSeq, url: 'blob:https://www.tiktok.com/' + dlSeq, filename: basename };
+  let suggestion = null;
+  for (const fn of dlDetermining.fns) fn(item, (s) => (suggestion = s));
+  downloads.push({ url, filename: suggestion ? suggestion.filename : basename, conflictAction: suggestion && suggestion.conflictAction, viaPage: true });
+  setTimeout(() => dlChanged.fns.slice().forEach((fn) => fn({ id: item.id, state: { current: 'complete' } })), 5);
+  return { ok: true, size: 123 };
+}
+const execMock = async (o) => {
+  const name = o.func && o.func.name;
+  if (name === 'readRehydrationJson') return [{ result: ttTabJson }];
+  if (name === 'pageFetchAndSave') return [{ result: await simulatePageDownload(...o.args) }];
+  if (o.args) return [{ result: { status: 200, text: JSON.stringify({ items: [igReel] }), url: 'https://www.instagram.com/api' } }];
+  return [{ result: false }];
+};
 // restaura o mock do Instagram (os cenários acima o deixaram sem login)
 igMode = 'ok';
-chrome.scripting.executeScript = async (o) =>
-  o.func && o.func.name === 'readRehydrationJson'
-    ? [{ result: ttTabJson }]
-    : o.args ? [{ result: { status: 200, text: JSON.stringify({ items: [igReel] }), url: 'https://www.instagram.com/api' } }] : [{ result: false }];
+chrome.scripting.executeScript = execMock;
 const ttSettings = (await import('../platforms/tiktok.js')).settings;
 ttSettings.retryDelayMs = 5;
 ttSettings.tabPollMs = 5;
@@ -299,6 +321,21 @@ await scenario('regra do Referer instalada (só pedidos fora de abas)', () => {
   assert.deepEqual(rule.condition.tabIds, [-1]);
   assert.ok(rule.condition.requestDomains.includes('tiktok.com') && rule.condition.requestDomains.includes('tiktokcdn.com'));
 });
+await scenario('downloads pela página: salvos com a pasta TikTok/ e uniquify (blob: renomeado)', () => {
+  const viaPage = downloads.filter((d) => d.viaPage);
+  assert.deepEqual(viaPage.map((d) => d.filename), ['TikTok/ana - 7001.mp4', 'TikTok/bia - 7002_1.jpeg', 'TikTok/bia - 7002_2.jpeg', 'TikTok/real_user - 7005.mp4', 'TikTok/curto - 7008.mp4']);
+  assert.ok(viaPage.every((d) => d.conflictAction === 'uniquify'));
+});
+pageMode = '403';
+const ttPageFail = await run('https://www.tiktok.com/@ok/video/7006');
+pageMode = 'ok';
+await scenario('busca pela página recusada (403): avisa e baixa direto', () => {
+  const t = ttPageFail.logs.join('\n');
+  assert.match(t, /\[TT\] aviso: Download pela página do TikTok falhou \(HTTP 403\); tentando direto/);
+  assert.deepEqual(ttPageFail.files, ['TikTok/ok - 7006.mp4']);
+  assert.ok(!downloads.some((d) => d.viaPage));
+  assert.match(t, /1 baixado\(s\) · 0 falha\(s\)/);
+});
 const ttRate = await run(['https://www.tiktok.com/@rate/video/7007', 'https://www.tiktok.com/@ok/video/7006', 'https://www.instagram.com/reel/DaReel12345/'].join('\n'));
 await scenario('429 no TikTok descarta os links do TikTok; o Instagram segue', () => {
   assert.match(ttRate.logs.join('\n'), /\[TT\] erro: Muitas requisições, aguarde alguns minutos/);
@@ -325,7 +362,7 @@ ttFlaky = 1; // 1ª tentativa direta barrada, a 2ª passa
 const ttRetry = await run('https://www.tiktok.com/@ok/video/7006');
 await scenario('intermitente: 403 na 1ª tentativa, repete e baixa (sem abrir aba)', () => {
   assert.deepEqual(ttRetry.files, ['TikTok/ok - 7006.mp4']);
-  assert.equal(closedTabs.length, 0);
+  assert.ok(!createdUrls.some((u) => u.includes('/@ok/video/7006')), 'não deve abrir a aba do vídeo');
 });
 ttFlaky = 0;
 ttForbidden = true;
@@ -335,15 +372,18 @@ ttForbidden = false;
 ttTabJson = null;
 await scenario('barrado nas duas tentativas diretas: lê a página numa aba real e fecha a aba', () => {
   assert.deepEqual(ttViaTab.files, ['TikTok/ok - 7006.mp4']);
-  assert.equal(closedTabs.length, 1);
+  assert.ok(createdUrls.some((u) => u.includes('/@ok/video/7006')), 'abriu a aba do vídeo');
+  assert.equal(closedTabs.length, createdUrls.length, 'todas as abas abertas foram fechadas');
   assert.match(ttViaTab.logs.join('\n'), /1 baixado\(s\) · 0 falha\(s\)/);
 });
 {
   const real = chrome.downloads.download;
   let calls = 0;
+  pageMode = '403'; // a busca pela página também é recusada, cai no download direto
   chrome.downloads.download = async (o) => (++calls === 1 ? undefined : real(o)); // CDN recusa só a 1ª vez
   const ttDl = await run('https://www.tiktok.com/@ok/video/7006');
   chrome.downloads.download = real;
+  pageMode = 'ok';
   await scenario('download recusado na 1ª vez: repete uma vez e conclui', () => {
     assert.deepEqual(ttDl.files, ['TikTok/ok - 7006.mp4']);
     assert.match(ttDl.logs.join('\n'), /1 baixado\(s\) · 0 falha\(s\)/);
@@ -351,7 +391,9 @@ await scenario('barrado nas duas tentativas diretas: lê a página numa aba real
 }
 const origDownload = chrome.downloads.download;
 chrome.downloads.download = async () => undefined; // o Chrome recusa
+pageMode = '403';
 const ttRefused = await run('https://www.tiktok.com/@ok/video/7006');
+pageMode = 'ok';
 chrome.downloads.download = origDownload;
 await scenario('download recusado → dica de abrir tiktok.com (só no TikTok)', () => {
   const t = ttRefused.logs.join('\n');

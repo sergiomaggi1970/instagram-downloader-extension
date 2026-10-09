@@ -1,5 +1,6 @@
 /* Plataforma: TikTok (vídeos e posts de fotos). */
 import { PlatformError, sanitizeFilename, extFromUrl, waitTabComplete } from './common.js';
+import { downloadFile, expectBlobDownload } from '../downloads.js';
 
 export const id = 'tiktok';
 export const tag = 'TT';
@@ -182,7 +183,104 @@ export function isFatal(err) {
   return err instanceof PlatformError && (err.code === 'rate' || err.code === 'blocked');
 }
 
-export async function cleanup() {}
+/* ------------------------------------------------------------------ *
+ * Download
+ * ------------------------------------------------------------------ */
+
+let helperTab = null; // {id, created}: aba www.tiktok.com usada como contexto para baixar
+
+/** Roda dentro da aba www.tiktok.com: Referer, Origin e cookies saem naturais. */
+async function pageFetchAndSave(url, basename) {
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) return { ok: false, status: res.status };
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = basename;
+    a.style.display = 'none';
+    (document.body || document.documentElement).appendChild(a);
+    a.click();
+    setTimeout(() => {
+      a.remove();
+      URL.revokeObjectURL(href);
+    }, 60000);
+    return { ok: true, size: blob.size };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+async function getPageTab() {
+  if (helperTab) {
+    try {
+      await chrome.tabs.get(helperTab.id);
+      return helperTab.id;
+    } catch {
+      helperTab = null;
+    }
+  }
+  const tabs = await chrome.tabs.query({ url: 'https://www.tiktok.com/*' });
+  const usable = tabs.find((t) => t.status === 'complete' && !t.discarded);
+  if (usable) {
+    helperTab = { id: usable.id, created: false };
+    return usable.id;
+  }
+  // página leve da mesma origem, só para ter o contexto de www.tiktok.com
+  const tab = await chrome.tabs.create({ url: 'https://www.tiktok.com/robots.txt', active: false });
+  helperTab = { id: tab.id, created: true };
+  await waitTabComplete(tab.id);
+  return tab.id;
+}
+
+export async function cleanup() {
+  const h = helperTab;
+  helperTab = null;
+  if (h && h.created) {
+    try {
+      await chrome.tabs.remove(h.id);
+    } catch {
+      /* já fechada */
+    }
+  }
+}
+
+async function downloadViaPage(file) {
+  const tabId = await getPageTab();
+  const exp = expectBlobDownload(file.filename);
+  try {
+    const r = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: pageFetchAndSave,
+      args: [file.url, file.filename.split('/').pop()],
+    });
+    const res = r && r[0] && r[0].result;
+    if (!res || !res.ok) {
+      const why = res && res.status ? `HTTP ${res.status}` : (res && res.error) || 'sem resposta da página';
+      throw new PlatformError('download', why);
+    }
+    await exp.promise;
+  } catch (e) {
+    exp.cancel();
+    throw e;
+  }
+}
+
+/**
+ * Baixa pela aba do TikTok (o servidor de vídeos só entrega com o Referer/cookies da página);
+ * se isso falhar, tenta o download direto do Chrome.
+ */
+export async function download(file, ctx = {}) {
+  const log = ctx.log || (() => {});
+  try {
+    await downloadViaPage(file);
+    return;
+  } catch (e) {
+    log('aviso', `Download pela página do TikTok falhou (${e.message}); tentando direto`);
+  }
+  await downloadFile(file.url, file.filename);
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

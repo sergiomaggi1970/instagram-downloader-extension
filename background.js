@@ -4,58 +4,13 @@ import { platforms, detectPlatform, parseLinks } from './platforms/index.js';
 import * as instagram from './platforms/instagram.js';
 import * as x from './platforms/x.js';
 import * as tiktok from './platforms/tiktok.js';
+import { downloadFile } from './downloads.js';
 
 const MAX_LOG = 500;
 let minDelayMs = 1500;
 let maxDelayMs = 3000;
-const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 const INVALID = 'Link não reconhecido';
-
-/* ------------------------------------------------------------------ *
- * Downloads
- * ------------------------------------------------------------------ */
-
-function waitDownload(id) {
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (err) => {
-      if (done) return;
-      done = true;
-      chrome.downloads.onChanged.removeListener(onChanged);
-      clearTimeout(timer);
-      err ? reject(err) : resolve();
-    };
-    const onChanged = (delta) => {
-      if (delta.id !== id || !delta.state) return;
-      if (delta.state.current === 'complete') finish();
-      else if (delta.state.current === 'interrupted') {
-        finish(new PlatformError('download', `Download interrompido (${(delta.error && delta.error.current) || 'erro'})`));
-      }
-    };
-    const timer = setTimeout(
-      () => finish(new PlatformError('download', 'Tempo esgotado no download')),
-      DOWNLOAD_TIMEOUT_MS
-    );
-    chrome.downloads.onChanged.addListener(onChanged);
-    chrome.downloads.search({ id }).then((items) => {
-      const it = items && items[0];
-      if (it && it.state === 'complete') finish();
-      else if (it && it.state === 'interrupted') finish(new PlatformError('download', 'Download interrompido'));
-    });
-  });
-}
-
-async function downloadFile(url, filename) {
-  const id = await chrome.downloads.download({
-    url,
-    filename,
-    conflictAction: 'uniquify',
-    saveAs: false,
-  });
-  if (id === undefined) throw new PlatformError('download', 'O Chrome recusou o download');
-  await waitDownload(id);
-}
 
 /* ------------------------------------------------------------------ *
  * Estado, log e fila
@@ -126,7 +81,7 @@ async function processLine(route) {
     try {
       for (let attempt = 0; ; attempt++) {
         try {
-          await downloadFile(f.url, f.filename);
+          await (platform.download ? platform.download(f, { log }) : downloadFile(f.url, f.filename));
           break;
         } catch (e) {
           if (attempt >= (platform.downloadRetries || 0)) throw e;

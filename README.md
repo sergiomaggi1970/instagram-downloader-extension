@@ -83,12 +83,13 @@ Em caso de falta de login no Instagram, de 429 ou de verificação do TikTok, os
 1. O link é normalizado (links curtos são seguidos pelo próprio navegador). A página do vídeo é lida e o JSON que ela embute (`__UNIVERSAL_DATA_FOR_REHYDRATION__`) traz os dados, sem login.
 2. A proteção anti-robô do TikTok às vezes barra a consulta direta (403). A extensão tenta duas vezes e, se continuar barrada, abre o vídeo numa aba em segundo plano, lê os dados da própria página e fecha a aba. Download recusado pelo servidor de vídeos também é repetido uma vez.
 3. Vídeo: escolhe a versão h264 de maior bitrate (toca em qualquer lugar; sem marca d'água). Post de fotos: baixa todas as imagens.
-4. O CDN do TikTok recusa (403) pedidos sem o cookie da página e sem `Referer: tiktok.com`. Os cookies vêm da própria consulta à página; o `Referer` é colocado por uma regra `declarativeNetRequest` que vale **só para pedidos da própria extensão** (não altera a sua navegação).
+4. O servidor de vídeos do TikTok recusa (403) pedidos sem o `Referer`, o `Origin` e os cookies da página, e o `chrome.downloads` não permite defini-los. Por isso o arquivo é buscado **de dentro de uma aba `www.tiktok.com`** (uma que você já tenha aberta ou uma aba leve em segundo plano, fechada ao final) e salvo por um download da própria página. A extensão intercepta esse download só para colocá-lo na pasta `TikTok/` com o nome certo. Se isso falhar, tenta o download direto, com uma regra `declarativeNetRequest` que define o `Referer` **apenas para pedidos da própria extensão** (não altera a sua navegação).
 
 ## Estrutura
 
 ```
-background.js          fila, roteamento por plataforma, log e downloads (módulo)
+background.js          fila, roteamento por plataforma e log (módulo)
+downloads.js           downloads (chrome.downloads) compartilhados
 platforms/instagram.js lógica do Instagram
 platforms/x.js         lógica do X
 platforms/tiktok.js    lógica do TikTok
